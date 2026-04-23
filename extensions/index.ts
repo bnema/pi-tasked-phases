@@ -702,7 +702,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as TaskedPhasesDetails | undefined;
 			if (!details) {
-				const text = result.content[0];
+				const text = Array.isArray(result.content) && result.content.length > 0 ? result.content[0] : undefined;
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
 			}
 
@@ -721,7 +721,6 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 		description: "Show the current spec, phases, and checklist state",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
-				ctx.ui.notify("/phases requires interactive mode", "error");
 				return;
 			}
 

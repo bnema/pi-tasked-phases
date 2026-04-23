@@ -13,16 +13,22 @@ Pi package for spec-driven phased task planning and checklist tracking.
 
 ## Install
 
+GitHub repo:
+
+```bash
+pi install https://github.com/bnema/pi-tasked-phases
+```
+
 Local path:
 
 ```bash
-pi install /home/brice/dev/projects/pi-tasked-phases
+pi install /path/to/pi-tasked-phases
 ```
 
 Or test the extension directly:
 
 ```bash
-pi -e /home/brice/dev/projects/pi-tasked-phases/extensions/index.ts
+pi -e /path/to/pi-tasked-phases/extensions/index.ts
 ```
 
 ## Intended workflow
