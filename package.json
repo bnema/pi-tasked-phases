@@ -1,0 +1,43 @@
+{
+  "name": "pi-tasked-phases",
+  "version": "0.1.0",
+  "description": "Pi package for spec-driven phased task planning and checklist tracking",
+  "license": "MIT",
+  "author": "bnema",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bnema/pi-tasked-phases.git"
+  },
+  "homepage": "https://github.com/bnema/pi-tasked-phases",
+  "bugs": {
+    "url": "https://github.com/bnema/pi-tasked-phases/issues"
+  },
+  "files": [
+    "extensions",
+    "skills",
+    "README.md",
+    "LICENSE",
+    "tsconfig.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
