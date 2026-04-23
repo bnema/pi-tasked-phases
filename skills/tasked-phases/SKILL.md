@@ -32,4 +32,5 @@ Use the `tasked_phases` tool as the source of truth for specs, phases, and check
 - Use `add_phase` and `add_task` for small incremental changes.
 - Use `update_phase` and `update_task` when editing existing entries.
 - Use `set_task_checked` instead of only claiming progress in prose.
+- Use `set_phase_checked` when an entire phase should be completed or reopened at once.
 - Do not assume a task is complete unless the tool state says it is checked.

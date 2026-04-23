@@ -1,6 +1,6 @@
 import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { Container, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
 import { Type, type Static } from "typebox";
 
 const TOOL_NAME = "tasked_phases";
@@ -16,6 +16,7 @@ const TOOL_ACTIONS = [
 	"remove_task",
 	"set_current_phase",
 	"set_task_checked",
+	"set_phase_checked",
 	"clear",
 ] as const;
 
@@ -72,7 +73,7 @@ const TaskedPhasesParamsSchema = Type.Object({
 	phaseGoal: Type.Optional(Type.String({ description: "Phase goal for add_phase or update_phase" })),
 	taskId: Type.Optional(Type.String({ description: "Target task id" })),
 	taskText: Type.Optional(Type.String({ description: "Task text for add_task or update_task" })),
-	checked: Type.Optional(Type.Boolean({ description: "Checked state for set_task_checked" })),
+	checked: Type.Optional(Type.Boolean({ description: "Checked state for set_task_checked or set_phase_checked" })),
 	phases: Type.Optional(Type.Array(PhaseInputSchema, { description: "Full plan replacement used by replace_plan" })),
 });
 
@@ -140,9 +141,9 @@ function getSuggestedCurrentPhaseId(state: PlanState): string | undefined {
 		return state.currentPhaseId;
 	}
 
-	const firstIncomplete = state.phases.find((phase) => phase.tasks.some((task) => !task.checked));
+	const firstIncomplete = state.phases.find((phase) => !isPhaseDone(phase));
 	if (firstIncomplete) return firstIncomplete.id;
-	return state.phases[0]?.id;
+	return state.phases[state.phases.length - 1]?.id;
 }
 
 function extractHighestIdNumber(prefix: string, ids: string[]): number {
@@ -497,11 +498,12 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 		label: "Tasked Phases",
 		description:
 			"Persist and update a structured spec, phased plan, current phase, and checklist tasks. Use it for spec-driven planning and progress tracking.",
-		promptSnippet: "Persist the current spec, phases, checklist tasks, and active phase for long-running work",
+		renderShell: "self",
 		promptGuidelines: [
 			"Use tasked_phases to store or update specs, phases, subtasks, and checklist progress.",
 			"After you create or materially revise a phased plan, call tasked_phases so the plan becomes persistent context.",
 			"Use tasked_phases set_task_checked when a checklist item is completed instead of only stating it in prose.",
+			"Use tasked_phases set_phase_checked when an entire phase should be marked done or reopened at once.",
 			"Use tasked_phases get_status before relying on remembered plan state if the plan may have changed.",
 		],
 		parameters: TaskedPhasesParamsSchema,
@@ -670,11 +672,57 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 							);
 						}
 						foundTask.task.checked = params.checked;
+						if (params.checked && nextState.currentPhaseId === foundTask.phase.id && isPhaseDone(foundTask.phase)) {
+							nextState.currentPhaseId = undefined;
+						}
 						setState(nextState, ctx);
 						return buildToolResult(
 							"set_task_checked",
 							state,
 							`${params.checked ? "Checked" : "Unchecked"} task ${foundTask.task.id}`,
+						);
+					}
+
+					case "set_phase_checked": {
+						const phase = findPhase(nextState, params.phaseId);
+						if (!phase) {
+							return buildToolResult(
+								"set_phase_checked",
+								state,
+								"Phase not updated",
+								"phaseId was not found.",
+							);
+						}
+						if (typeof params.checked !== "boolean") {
+							return buildToolResult(
+								"set_phase_checked",
+								state,
+								"Phase not updated",
+								"checked must be provided for set_phase_checked.",
+							);
+						}
+						if (phase.tasks.length === 0) {
+							return buildToolResult(
+								"set_phase_checked",
+								state,
+								"Phase not updated",
+								"set_phase_checked requires the phase to have at least one task.",
+							);
+						}
+						for (const task of phase.tasks) {
+							task.checked = params.checked;
+						}
+						if (params.checked && nextState.currentPhaseId === phase.id) {
+							nextState.currentPhaseId = undefined;
+						}
+						if (!params.checked) {
+							nextState.currentPhaseId = phase.id;
+						}
+						setState(nextState, ctx);
+						return buildToolResult(
+							"set_phase_checked",
+							state,
+							`${params.checked ? "Checked" : "Unchecked"} phase ${phase.title}`,
 						);
 					}
 
@@ -688,32 +736,28 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 				}
 			});
 		},
-		renderCall(args, theme) {
-			const parts: string[] = [];
-			parts.push(theme.fg("toolTitle", theme.bold(`${TOOL_NAME} `)));
-			parts.push(theme.fg("muted", args.action));
-			if (typeof args.phaseId === "string") parts.push(theme.fg("accent", ` ${args.phaseId}`));
-			if (typeof args.taskId === "string") parts.push(theme.fg("accent", ` ${args.taskId}`));
-			if (typeof args.phaseTitle === "string") parts.push(theme.fg("dim", ` "${truncatePlain(args.phaseTitle, 32)}"`));
-			if (typeof args.taskText === "string") parts.push(theme.fg("dim", ` "${truncatePlain(args.taskText, 32)}"`));
-			if (Array.isArray(args.phases)) parts.push(theme.fg("dim", ` (${args.phases.length} phase(s))`));
-			return new Text(parts.join(""), 0, 0);
+		renderCall() {
+			return new Container();
 		},
 		renderResult(result, { expanded }, theme) {
 			const details = result.details as TaskedPhasesDetails | undefined;
 			if (!details) {
 				const text = Array.isArray(result.content) && result.content.length > 0 ? result.content[0] : undefined;
-				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				if (!expanded || text?.type !== "text") {
+					return new Container();
+				}
+				return new Text(theme.fg("dim", text.text), 0, 0);
 			}
 
-			const lines = details.summary.split("\n");
-			const visibleLines = expanded ? lines : lines.slice(0, 12);
-			let text = details.error ? theme.fg("error", `Error: ${details.error}`) : theme.fg("success", "Updated phased plan");
-			text += "\n" + visibleLines.join("\n");
-			if (!expanded && lines.length > visibleLines.length) {
-				text += `\n${theme.fg("dim", `... ${lines.length - visibleLines.length} more line(s)`)}`;
+			if (details.error) {
+				return new Text(theme.fg("error", `Tasked phases error: ${details.error}`), 0, 0);
 			}
-			return new Text(text, 0, 0);
+
+			if (!expanded) {
+				return new Container();
+			}
+
+			return new Text(theme.fg("dim", details.summary), 0, 0);
 		},
 	});
 

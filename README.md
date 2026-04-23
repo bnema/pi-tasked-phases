@@ -57,10 +57,13 @@ Define the spec for this feature, split it into phases with concrete checklist t
 - `remove_task`
 - `set_current_phase`
 - `set_task_checked`
+- `set_phase_checked`
 - `clear`
 
 ## Notes
 
 - The tool state is the source of truth.
 - State is reconstructed from tool results, so branching and session resume stay consistent.
+- `set_phase_checked` bulk-checks or reopens every task in a phase.
+- Tool rendering is intentionally quiet so background planning updates create less UI noise.
 - This package does not write checklist files; it keeps state inside the pi session.
