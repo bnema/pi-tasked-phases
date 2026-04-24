@@ -4,6 +4,19 @@ import { Container, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-t
 import { Type, type Static } from "typebox";
 
 const TOOL_NAME = "tasked_phases";
+const WIDGET_VISIBLE_PHASES = 4;
+const CLOSED_PLAN_BLOCKED_ACTIONS = new Set<string>([
+	"replace_plan",
+	"add_phase",
+	"update_phase",
+	"remove_phase",
+	"add_task",
+	"update_task",
+	"remove_task",
+	"set_current_phase",
+	"set_task_checked",
+	"set_phase_checked",
+]);
 const TOOL_ACTIONS = [
 	"get_status",
 	"set_spec",
@@ -40,6 +53,8 @@ interface PlanState {
 	spec?: string;
 	phases: Phase[];
 	currentPhaseId?: string;
+	closedAt?: number;
+	closedSummary?: string;
 	nextPhaseNumber: number;
 	nextTaskNumber: number;
 	updatedAt: number;
@@ -66,7 +81,10 @@ const PhaseInputSchema = Type.Object({
 });
 
 const TaskedPhasesParamsSchema = Type.Object({
-	action: StringEnum(TOOL_ACTIONS, { description: "State operation to perform" }),
+	action: StringEnum(TOOL_ACTIONS, {
+		description:
+			"State operation to perform. If the current plan is closed/complete, restart by calling clear first, or set_spec immediately followed by replace_plan. Do not extend closed plans.",
+	}),
 	spec: Type.Optional(Type.String({ description: "Spec text used by set_spec" })),
 	phaseId: Type.Optional(Type.String({ description: "Target phase id" })),
 	phaseTitle: Type.Optional(Type.String({ description: "Phase title for add_phase or update_phase" })),
@@ -77,9 +95,7 @@ const TaskedPhasesParamsSchema = Type.Object({
 	phases: Type.Optional(Type.Array(PhaseInputSchema, { description: "Full plan replacement used by replace_plan" })),
 });
 
-type TaskInput = Static<typeof TaskInputSchema>;
 type PhaseInput = Static<typeof PhaseInputSchema>;
-type TaskedPhasesParams = Static<typeof TaskedPhasesParamsSchema>;
 
 function createEmptyState(): PlanState {
 	return {
@@ -131,9 +147,72 @@ function isPhaseDone(phase: Phase): boolean {
 	return progress.total > 0 && progress.done === progress.total;
 }
 
+function hasStoredPlan(state: PlanState): boolean {
+	return Boolean(state.spec) || state.phases.length > 0;
+}
+
+function isPlanComplete(state: PlanState): boolean {
+	return state.phases.length > 0 && state.phases.every((phase) => isPhaseDone(phase));
+}
+
+function isPlanClosed(state: PlanState): boolean {
+	return typeof state.closedAt === "number";
+}
+
+function closePlanIfComplete(state: PlanState): void {
+	if (!isPlanComplete(state)) return;
+
+	const progress = getPlanProgress(state);
+	state.closedAt ??= Date.now();
+	state.closedSummary = `Completed ${progress.done}/${progress.total} tasks across ${state.phases.length} phase(s).`;
+	state.currentPhaseId = undefined;
+}
+
 function getCurrentPhase(state: PlanState): Phase | undefined {
 	if (!state.currentPhaseId) return undefined;
 	return state.phases.find((phase) => phase.id === state.currentPhaseId);
+}
+
+function getCurrentPhaseIndex(state: PlanState): number {
+	const currentIndex = state.phases.findIndex((phase) => phase.id === state.currentPhaseId);
+	if (currentIndex >= 0) return currentIndex;
+
+	const firstIncompleteIndex = state.phases.findIndex((phase) => !isPhaseDone(phase));
+	if (firstIncompleteIndex >= 0) return firstIncompleteIndex;
+
+	return Math.max(0, state.phases.length - 1);
+}
+
+function getPhaseWindow(
+	state: PlanState,
+	maxVisible: number,
+): { phases: Phase[]; hiddenBefore: number; hiddenAfter: number } {
+	const total = state.phases.length;
+	if (total === 0) return { phases: [], hiddenBefore: 0, hiddenAfter: 0 };
+
+	const visibleCount = Math.min(Math.max(1, maxVisible), total);
+	if (total <= visibleCount) {
+		return { phases: state.phases, hiddenBefore: 0, hiddenAfter: 0 };
+	}
+
+	const currentIndex = getCurrentPhaseIndex(state);
+	const phasesBeforeCurrent = Math.floor((visibleCount - 1) / 2);
+	let start = currentIndex - phasesBeforeCurrent;
+	let end = start + visibleCount;
+
+	if (start < 0) {
+		start = 0;
+		end = visibleCount;
+	} else if (end > total) {
+		end = total;
+		start = total - visibleCount;
+	}
+
+	return {
+		phases: state.phases.slice(start, end),
+		hiddenBefore: start,
+		hiddenAfter: total - end,
+	};
 }
 
 function getSuggestedCurrentPhaseId(state: PlanState): string | undefined {
@@ -168,6 +247,13 @@ function ensureState(state: PlanState): PlanState {
 		goal: normalizeOptionalText(phase.goal),
 		tasks: phase.tasks.map((task) => ({ id: task.id, text: task.text, checked: task.checked })),
 	}));
+	normalized.closedSummary = normalizeOptionalText(normalized.closedSummary);
+	if (isPlanComplete(normalized)) {
+		closePlanIfComplete(normalized);
+	} else {
+		normalized.closedAt = undefined;
+		normalized.closedSummary = undefined;
+	}
 
 	const highestPhase = extractHighestIdNumber(
 		"phase",
@@ -180,7 +266,11 @@ function ensureState(state: PlanState): PlanState {
 
 	normalized.nextPhaseNumber = Math.max(normalized.nextPhaseNumber ?? 1, highestPhase + 1);
 	normalized.nextTaskNumber = Math.max(normalized.nextTaskNumber ?? 1, highestTask + 1);
-	normalized.currentPhaseId = getSuggestedCurrentPhaseId(normalized);
+	if (isPlanClosed(normalized)) {
+		normalized.currentPhaseId = undefined;
+	} else {
+		normalized.currentPhaseId = getSuggestedCurrentPhaseId(normalized);
+	}
 	normalized.updatedAt = Date.now();
 	return normalized;
 }
@@ -237,7 +327,7 @@ function buildPhaseFromInput(state: PlanState, input: PhaseInput): Phase {
 }
 
 function buildSummary(state: PlanState): string {
-	if (!state.spec && state.phases.length === 0) {
+	if (!hasStoredPlan(state)) {
 		return "No spec or phased checklist has been stored yet.";
 	}
 
@@ -255,6 +345,9 @@ function buildSummary(state: PlanState): string {
 
 	const total = getPlanProgress(state);
 	lines.push(`Plan progress: ${total.done}/${total.total} tasks checked`);
+	if (isPlanClosed(state)) {
+		lines.push(`Plan closed: ${state.closedSummary ?? "all phases complete"}`);
+	}
 	lines.push("Phases:");
 	for (const phase of state.phases) {
 		const progress = getPhaseProgress(phase);
@@ -275,12 +368,24 @@ function buildSummary(state: PlanState): string {
 }
 
 function buildContextSummary(state: PlanState): string {
+	const instructions = isPlanClosed(state)
+		? [
+				"The stored plan is CLOSED because every task in every phase is complete.",
+				"Do not add phases or tasks to this closed plan for new user work.",
+				"For any new work, restart by calling tasked_phases clear first, or set_spec immediately followed by replace_plan."
+			]
+		: [
+				"Update tasked_phases continuously while implementing, not only at the end.",
+				"After completing each checklist task, immediately call set_task_checked.",
+				"After moving to another phase, immediately call set_current_phase.",
+				"Do not rely on prose alone for completion state.",
+			];
+
 	const base = [
 		"[TASKED PHASES STATE - SOURCE OF TRUTH]",
 		buildSummary(state),
 		"",
-		"Use tasked_phases to update spec, phases, current phase, and checklist state.",
-		"Do not rely on prose alone for completion state.",
+		...instructions,
 	].join("\n");
 
 	if (base.length <= 4000) return base;
@@ -288,7 +393,8 @@ function buildContextSummary(state: PlanState): string {
 }
 
 function buildWidgetLines(state: PlanState, theme: Theme): string[] | undefined {
-	if (!state.spec && state.phases.length === 0) return undefined;
+	if (!hasStoredPlan(state)) return undefined;
+	if (isPlanClosed(state)) return undefined;
 
 	const lines: string[] = [];
 	const total = getPlanProgress(state);
@@ -307,22 +413,30 @@ function buildWidgetLines(state: PlanState, theme: Theme): string[] | undefined 
 	}
 	lines.push(theme.fg("muted", `${total.done}/${total.total} tasks checked across ${state.phases.length} phase(s)`));
 
-	for (const phase of state.phases.slice(0, 4)) {
-		const progress = getPhaseProgress(phase);
-		const prefix = phase.id === state.currentPhaseId ? "> " : "  ";
-		const marker = isPhaseDone(phase) ? "[x]" : "[ ]";
-		lines.push(`${theme.fg("dim", prefix)}${marker} ${phase.title} ${theme.fg("dim", `(${progress.done}/${progress.total})`)}`);
+	const phaseWindow = getPhaseWindow(state, WIDGET_VISIBLE_PHASES);
+	if (phaseWindow.hiddenBefore > 0) {
+		lines.push(theme.fg("dim", `... +${phaseWindow.hiddenBefore} earlier phases`));
 	}
 
-	if (state.phases.length > 4) {
-		lines.push(theme.fg("dim", `... +${state.phases.length - 4} more phases`));
+	for (const phase of phaseWindow.phases) {
+		const progress = getPhaseProgress(phase);
+		const isCurrent = phase.id === state.currentPhaseId;
+		const prefix = isCurrent ? "> " : "  ";
+		const marker = isPhaseDone(phase) ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
+		const title = isCurrent ? theme.fg("accent", phase.title) : theme.fg("text", phase.title);
+		lines.push(`${theme.fg("dim", prefix)}${marker} ${title} ${theme.fg("dim", `(${progress.done}/${progress.total})`)}`);
+	}
+
+	if (phaseWindow.hiddenAfter > 0) {
+		lines.push(theme.fg("dim", `... +${phaseWindow.hiddenAfter} later phases`));
 	}
 
 	return lines;
 }
 
 function buildStatusText(state: PlanState, theme: Theme): string | undefined {
-	if (!state.spec && state.phases.length === 0) return undefined;
+	if (!hasStoredPlan(state)) return undefined;
+	if (isPlanClosed(state)) return undefined;
 	const total = getPlanProgress(state);
 	const currentPhase = getCurrentPhase(state);
 	let text = theme.fg("accent", `phases ${total.done}/${total.total}`);
@@ -338,7 +452,7 @@ function buildViewLines(state: PlanState, theme: Theme): string[] {
 	lines.push(theme.fg("accent", " Tasked phases "));
 	lines.push("");
 
-	if (!state.spec && state.phases.length === 0) {
+	if (!hasStoredPlan(state)) {
 		lines.push(`  ${theme.fg("dim", "No spec or phases stored yet.")}`);
 		lines.push("");
 		lines.push(`  ${theme.fg("dim", "Ask the agent to create a spec and phased checklist.")}`);
@@ -357,6 +471,10 @@ function buildViewLines(state: PlanState, theme: Theme): string[] {
 
 	const total = getPlanProgress(state);
 	lines.push(`  ${theme.fg("muted", `Progress: ${total.done}/${total.total} tasks checked`)}`);
+	if (isPlanClosed(state)) {
+		lines.push(`  ${theme.fg("success", `Closed: ${state.closedSummary ?? "all phases complete"}`)}`);
+		lines.push(`  ${theme.fg("dim", "New work should create a fresh plan instead of extending this one.")}`);
+	}
 	lines.push("");
 
 	for (const phase of state.phases) {
@@ -483,7 +601,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 	pi.on("session_tree", async (_event, ctx) => syncStateFromSession(ctx));
 
 	pi.on("before_agent_start", async () => {
-		if (!state.spec && state.phases.length === 0) return;
+		if (!hasStoredPlan(state)) return;
 		return {
 			message: {
 				customType: "tasked-phases-context",
@@ -502,8 +620,11 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use tasked_phases to store or update specs, phases, subtasks, and checklist progress.",
 			"After you create or materially revise a phased plan, call tasked_phases so the plan becomes persistent context.",
-			"Use tasked_phases set_task_checked when a checklist item is completed instead of only stating it in prose.",
+			"While implementing, update tasked_phases continuously; do not wait until the end of the turn or final summary.",
+			"Use tasked_phases set_task_checked immediately after each checklist item is completed.",
+			"Use tasked_phases set_current_phase when you begin work on a different phase.",
 			"Use tasked_phases set_phase_checked when an entire phase should be marked done or reopened at once.",
+			"When all tasks in all phases are checked, the plan is closed; for unrelated new work, restart by calling clear first, or set_spec immediately followed by replace_plan. Do not extend the closed plan.",
 			"Use tasked_phases get_status before relying on remembered plan state if the plan may have changed.",
 		],
 		parameters: TaskedPhasesParamsSchema,
@@ -514,8 +635,21 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 				}
 
 				const nextState = cloneState(state);
+				const action = params.action as ToolAction;
 
-				switch (params.action as ToolAction) {
+				const isReopenAction =
+					(action === "set_task_checked" || action === "set_phase_checked") && params.checked === false;
+
+				if (isPlanClosed(state) && CLOSED_PLAN_BLOCKED_ACTIONS.has(action) && !isReopenAction) {
+					return buildToolResult(
+						action,
+						state,
+						"Plan is closed",
+						"This plan is already complete and closed. To start new work, call clear first, or call set_spec immediately followed by replace_plan. Do not extend the closed plan.",
+					);
+				}
+
+				switch (action) {
 					case "get_status":
 						updateUi(state, ctx);
 						return buildToolResult("get_status", state, "Current phased plan status");
@@ -526,6 +660,14 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 							return buildToolResult("set_spec", state, "Spec not updated", "spec is required for set_spec.");
 						}
 						nextState.spec = spec;
+						if (isPlanClosed(state)) {
+							nextState.phases = [];
+							nextState.currentPhaseId = undefined;
+							nextState.nextPhaseNumber = 1;
+							nextState.nextTaskNumber = 1;
+						}
+						nextState.closedAt = undefined;
+						nextState.closedSummary = undefined;
 						setState(nextState, ctx);
 						return buildToolResult("set_spec", state, "Saved spec");
 					}
