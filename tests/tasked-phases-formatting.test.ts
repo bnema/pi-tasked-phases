@@ -34,15 +34,16 @@ const sampleState: TestPlanState = {
 	updatedAt: Date.now(),
 };
 
-test("routine mutation tool results are compact and omit the full checklist", () => {
+test("routine mutation tool results stay compact but include active incomplete task IDs", () => {
 	const text = __testHooks.buildToolResultText("set_task_checked", sampleState, "Checked task task-3");
 
 	assert.match(text, /Checked task task-3/);
 	assert.match(text, /Progress: 3\/4 tasks checked/);
 	assert.match(text, /Current phase: Implement compact output \[phase-2\] \(1 remaining\) - Reduce repeated context/);
+	assert.match(text, /Incomplete tasks:/);
+	assert.match(text, /\[ \] Remaining implementation task \[task-4\]/);
 	assert.doesNotMatch(text, /Phases:/);
 	assert.doesNotMatch(text, /Completed discovery task/);
-	assert.doesNotMatch(text, /Remaining implementation task \[task-4\]/);
 });
 
 test("explicit status tool results keep the full summary", () => {
@@ -63,6 +64,27 @@ test("injected context focuses on incomplete work and omits completed task histo
 	assert.match(text, /\[ \] Remaining implementation task \[task-4\]/);
 	assert.match(text, /Completed tasks are omitted/);
 	assert.doesNotMatch(text, /Completed discovery task/);
+	assert.doesNotMatch(text, /Completed implementation task/);
+});
+
+test("injected context includes bounded task IDs for other incomplete phases", () => {
+	const multiPhaseState: TestPlanState = {
+		...sampleState,
+		phases: [
+			{
+				id: "phase-1",
+				title: "Active implementation",
+				tasks: [{ id: "task-1", text: "Active incomplete task", checked: false }],
+			},
+			...sampleState.phases.slice(1),
+		],
+		currentPhaseId: "phase-1",
+	};
+	const text = __testHooks.buildContextSummary(multiPhaseState);
+
+	assert.match(text, /Other incomplete phases:/);
+	assert.match(text, /\[ \] Implement compact output \[phase-2\] \(1\/2\) - Reduce repeated context/);
+	assert.match(text, /\[ \] Remaining implementation task \[task-4\]/);
 	assert.doesNotMatch(text, /Completed implementation task/);
 });
 

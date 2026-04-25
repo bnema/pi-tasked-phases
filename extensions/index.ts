@@ -372,8 +372,10 @@ function buildSummary(state: PlanState): string {
 }
 
 const FULL_SUMMARY_ACTIONS = new Set<ToolAction>(["get_status", "replace_plan", "clear"]);
+const COMPACT_VISIBLE_INCOMPLETE_TASKS = 4;
 const CONTEXT_VISIBLE_INCOMPLETE_TASKS = 8;
 const CONTEXT_VISIBLE_OTHER_PHASES = 8;
+const CONTEXT_VISIBLE_OTHER_PHASE_TASKS = 2;
 const CONTEXT_MAX_LENGTH = 2500;
 
 function formatRemainingTaskCount(count: number): string {
@@ -390,6 +392,17 @@ function formatPhaseTitle(phase: Phase): string {
 
 function formatTaskText(task: PhaseTask): string {
 	return truncatePlain(singleLine(task.text), 180);
+}
+
+function appendIncompleteTaskLines(lines: string[], tasks: PhaseTask[], visibleCount: number, indent: string): void {
+	const visibleTasks = tasks.slice(0, visibleCount);
+	for (const task of visibleTasks) {
+		lines.push(`${indent}[ ] ${formatTaskText(task)} [${task.id}]`);
+	}
+	const omittedCount = tasks.length - visibleTasks.length;
+	if (omittedCount > 0) {
+		lines.push(`${indent}... ${omittedCount} more incomplete task(s) omitted; call tasked_phases get_status for the full checklist.`);
+	}
 }
 
 function buildCompactSummary(state: PlanState): string {
@@ -412,9 +425,13 @@ function buildCompactSummary(state: PlanState): string {
 
 	const currentPhase = getActivePhase(state);
 	if (currentPhase) {
-		const incompleteCount = getIncompleteTasks(currentPhase).length;
+		const incompleteTasks = getIncompleteTasks(currentPhase);
 		const goalSuffix = currentPhase.goal ? ` - ${truncatePlain(singleLine(currentPhase.goal), 120)}` : "";
-		lines.push(`Current phase: ${formatPhaseTitle(currentPhase)} [${currentPhase.id}] (${formatRemainingTaskCount(incompleteCount)})${goalSuffix}`);
+		lines.push(`Current phase: ${formatPhaseTitle(currentPhase)} [${currentPhase.id}] (${formatRemainingTaskCount(incompleteTasks.length)})${goalSuffix}`);
+		if (incompleteTasks.length > 0) {
+			lines.push("Incomplete tasks:");
+			appendIncompleteTaskLines(lines, incompleteTasks, COMPACT_VISIBLE_INCOMPLETE_TASKS, "  ");
+		}
 	} else if (state.phases.length > 0) {
 		lines.push("Current phase: none");
 	}
@@ -462,16 +479,9 @@ function buildContextSummary(state: PlanState): string {
 				const goalSuffix = currentPhase.goal ? ` - ${truncatePlain(singleLine(currentPhase.goal), 180)}` : "";
 				lines.push(`Current phase: ${formatPhaseTitle(currentPhase)} [${currentPhase.id}] (${progress.done}/${progress.total})${goalSuffix}`);
 				const allIncompleteTasks = getIncompleteTasks(currentPhase);
-				const incompleteTasks = allIncompleteTasks.slice(0, CONTEXT_VISIBLE_INCOMPLETE_TASKS);
-				if (incompleteTasks.length > 0) {
+				if (allIncompleteTasks.length > 0) {
 					lines.push("Incomplete tasks in current phase:");
-					for (const task of incompleteTasks) {
-						lines.push(`  [ ] ${formatTaskText(task)} [${task.id}]`);
-					}
-					const omittedCount = allIncompleteTasks.length - incompleteTasks.length;
-					if (omittedCount > 0) {
-						lines.push(`  ... ${omittedCount} more incomplete task(s) omitted; call tasked_phases get_status for the full checklist.`);
-					}
+					appendIncompleteTaskLines(lines, allIncompleteTasks, CONTEXT_VISIBLE_INCOMPLETE_TASKS, "  ");
 				}
 			}
 
@@ -484,6 +494,7 @@ function buildContextSummary(state: PlanState): string {
 					const progress = getPhaseProgress(phase);
 					const goalSuffix = phase.goal ? ` - ${truncatePlain(singleLine(phase.goal), 120)}` : "";
 					lines.push(`  [ ] ${formatPhaseTitle(phase)} [${phase.id}] (${progress.done}/${progress.total})${goalSuffix}`);
+					appendIncompleteTaskLines(lines, getIncompleteTasks(phase), CONTEXT_VISIBLE_OTHER_PHASE_TASKS, "      ");
 				}
 				const omittedCount = otherIncompletePhases.length - CONTEXT_VISIBLE_OTHER_PHASES;
 				if (omittedCount > 0) {
