@@ -173,6 +173,10 @@ function getCurrentPhase(state: PlanState): Phase | undefined {
 	return state.phases.find((phase) => phase.id === state.currentPhaseId);
 }
 
+function getActivePhase(state: PlanState): Phase | undefined {
+	return getCurrentPhase(state) ?? state.phases.find((phase) => !isPhaseDone(phase));
+}
+
 function getCurrentPhaseIndex(state: PlanState): number {
 	const currentIndex = state.phases.findIndex((phase) => phase.id === state.currentPhaseId);
 	if (currentIndex >= 0) return currentIndex;
@@ -367,6 +371,66 @@ function buildSummary(state: PlanState): string {
 	return lines.join("\n");
 }
 
+const FULL_SUMMARY_ACTIONS = new Set<ToolAction>(["get_status", "replace_plan", "clear"]);
+const CONTEXT_VISIBLE_INCOMPLETE_TASKS = 8;
+const CONTEXT_VISIBLE_OTHER_PHASES = 8;
+const CONTEXT_MAX_LENGTH = 2500;
+
+function formatRemainingTaskCount(count: number): string {
+	return count === 1 ? "1 remaining" : `${count} remaining`;
+}
+
+function getIncompleteTasks(phase: Phase): PhaseTask[] {
+	return phase.tasks.filter((task) => !task.checked);
+}
+
+function formatPhaseTitle(phase: Phase): string {
+	return truncatePlain(singleLine(phase.title), 120);
+}
+
+function formatTaskText(task: PhaseTask): string {
+	return truncatePlain(singleLine(task.text), 180);
+}
+
+function buildCompactSummary(state: PlanState): string {
+	if (!hasStoredPlan(state)) {
+		return "No spec or phased checklist has been stored yet.";
+	}
+
+	const lines: string[] = [];
+	if (state.spec) {
+		lines.push(`Spec: ${truncatePlain(singleLine(state.spec), 220)}`);
+	}
+
+	const total = getPlanProgress(state);
+	lines.push(`Progress: ${total.done}/${total.total} tasks checked`);
+
+	if (isPlanClosed(state)) {
+		lines.push(`Plan closed: ${state.closedSummary ?? "all phases complete"}`);
+		return lines.join("\n");
+	}
+
+	const currentPhase = getActivePhase(state);
+	if (currentPhase) {
+		const incompleteCount = getIncompleteTasks(currentPhase).length;
+		const goalSuffix = currentPhase.goal ? ` - ${truncatePlain(singleLine(currentPhase.goal), 120)}` : "";
+		lines.push(`Current phase: ${formatPhaseTitle(currentPhase)} [${currentPhase.id}] (${formatRemainingTaskCount(incompleteCount)})${goalSuffix}`);
+	} else if (state.phases.length > 0) {
+		lines.push("Current phase: none");
+	}
+
+	return lines.join("\n");
+}
+
+function shouldReturnFullSummary(action: ToolAction, error?: string): boolean {
+	return Boolean(error) || FULL_SUMMARY_ACTIONS.has(action);
+}
+
+function buildToolResultText(action: ToolAction, state: PlanState, headline: string, error?: string): string {
+	const summary = shouldReturnFullSummary(action, error) ? buildSummary(state) : buildCompactSummary(state);
+	return error ? `Error: ${error}\n\n${summary}` : `${headline}\n\n${summary}`;
+}
+
 function buildContextSummary(state: PlanState): string {
 	const instructions = isPlanClosed(state)
 		? [
@@ -375,21 +439,73 @@ function buildContextSummary(state: PlanState): string {
 				"For any new work, restart by calling tasked_phases clear first, or set_spec immediately followed by replace_plan."
 			]
 		: [
+				"Completed tasks are omitted from this injected context to reduce token use.",
+				"Call tasked_phases get_status if the exact full checklist is needed.",
 				"Update tasked_phases continuously while implementing, not only at the end.",
 				"After completing each checklist task, immediately call set_task_checked.",
 				"After moving to another phase, immediately call set_current_phase.",
 				"Do not rely on prose alone for completion state.",
 			];
 
-	const base = [
-		"[TASKED PHASES STATE - SOURCE OF TRUTH]",
-		buildSummary(state),
-		"",
-		...instructions,
-	].join("\n");
+	const lines: string[] = ["[TASKED PHASES STATE - SOURCE OF TRUTH]"];
+	if (!hasStoredPlan(state)) {
+		lines.push("No spec or phased checklist has been stored yet.");
+	} else {
+		const total = getPlanProgress(state);
+		lines.push(`Progress: ${total.done}/${total.total} tasks checked across ${state.phases.length} phase(s)`);
+		if (isPlanClosed(state)) {
+			lines.push(`Plan closed: ${state.closedSummary ?? "all phases complete"}`);
+		} else {
+			const currentPhase = getActivePhase(state);
+			if (currentPhase) {
+				const progress = getPhaseProgress(currentPhase);
+				const goalSuffix = currentPhase.goal ? ` - ${truncatePlain(singleLine(currentPhase.goal), 180)}` : "";
+				lines.push(`Current phase: ${formatPhaseTitle(currentPhase)} [${currentPhase.id}] (${progress.done}/${progress.total})${goalSuffix}`);
+				const allIncompleteTasks = getIncompleteTasks(currentPhase);
+				const incompleteTasks = allIncompleteTasks.slice(0, CONTEXT_VISIBLE_INCOMPLETE_TASKS);
+				if (incompleteTasks.length > 0) {
+					lines.push("Incomplete tasks in current phase:");
+					for (const task of incompleteTasks) {
+						lines.push(`  [ ] ${formatTaskText(task)} [${task.id}]`);
+					}
+					const omittedCount = allIncompleteTasks.length - incompleteTasks.length;
+					if (omittedCount > 0) {
+						lines.push(`  ... ${omittedCount} more incomplete task(s) omitted; call tasked_phases get_status for the full checklist.`);
+					}
+				}
+			}
 
-	if (base.length <= 4000) return base;
-	return `${base.slice(0, 3968).trimEnd()}\n... (truncated)`;
+			const otherIncompletePhases = state.phases.filter(
+				(phase) => phase.id !== currentPhase?.id && getIncompleteTasks(phase).length > 0,
+			);
+			if (otherIncompletePhases.length > 0) {
+				lines.push("Other incomplete phases:");
+				for (const phase of otherIncompletePhases.slice(0, CONTEXT_VISIBLE_OTHER_PHASES)) {
+					const progress = getPhaseProgress(phase);
+					const goalSuffix = phase.goal ? ` - ${truncatePlain(singleLine(phase.goal), 120)}` : "";
+					lines.push(`  [ ] ${formatPhaseTitle(phase)} [${phase.id}] (${progress.done}/${progress.total})${goalSuffix}`);
+				}
+				const omittedCount = otherIncompletePhases.length - CONTEXT_VISIBLE_OTHER_PHASES;
+				if (omittedCount > 0) {
+					lines.push(`  ... ${omittedCount} more incomplete phase(s) omitted; call tasked_phases get_status for the full checklist.`);
+				}
+			}
+		}
+
+		if (state.spec) {
+			lines.push("");
+			lines.push("Spec:");
+			lines.push(truncatePlain(state.spec, 600));
+		}
+	}
+
+	const instructionBlock = ["", ...instructions].join("\n");
+	const body = lines.join("\n");
+	const base = `${body}${instructionBlock}`;
+
+	if (base.length <= CONTEXT_MAX_LENGTH) return base;
+	const maxBodyLength = Math.max(0, CONTEXT_MAX_LENGTH - instructionBlock.length - 20);
+	return `${body.slice(0, maxBodyLength).trimEnd()}\n... (truncated)${instructionBlock}`;
 }
 
 function buildWidgetLines(state: PlanState, theme: Theme): string[] | undefined {
@@ -509,8 +625,8 @@ function updateUi(state: PlanState, ctx: ExtensionContext): void {
 }
 
 function buildToolResult(action: ToolAction, state: PlanState, headline: string, error?: string) {
-	const summary = buildSummary(state);
-	const text = error ? `Error: ${error}\n\n${summary}` : `${headline}\n\n${summary}`;
+	const summary = shouldReturnFullSummary(action, error) ? buildSummary(state) : buildCompactSummary(state);
+	const text = buildToolResultText(action, state, headline, error);
 	return {
 		content: [{ type: "text" as const, text }],
 		details: { action, state, summary, error } satisfies TaskedPhasesDetails,
@@ -568,6 +684,11 @@ function restoreStateFromSession(ctx: ExtensionContext): PlanState {
 
 	return restored;
 }
+
+export const __testHooks = {
+	buildContextSummary,
+	buildToolResultText,
+};
 
 export default function taskedPhasesExtension(pi: ExtensionAPI) {
 	let state = createEmptyState();

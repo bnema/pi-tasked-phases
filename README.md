@@ -65,5 +65,8 @@ Define the spec for this feature, split it into phases with concrete checklist t
 - The tool state is the source of truth.
 - State is reconstructed from tool results, so branching and session resume stay consistent.
 - `set_phase_checked` bulk-checks or reopens every task in a phase.
+- Routine update actions return compact progress summaries to avoid repeating the full checklist in model context.
+- Use `get_status` or `/phases` when you need the full spec, phases, and task list.
+- The hidden per-turn context focuses on the current phase and incomplete work; completed task history is omitted to reduce token use.
 - Tool rendering is intentionally quiet so background planning updates create less UI noise.
 - This package does not write checklist files; it keeps state inside the pi session.
