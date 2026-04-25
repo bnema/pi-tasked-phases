@@ -1,6 +1,6 @@
 {
   "name": "pi-tasked-phases",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi package for spec-driven phased task planning and checklist tracking",
   "license": "MIT",
   "author": "bnema",
