@@ -55,6 +55,52 @@ test("explicit status tool results keep the full summary", () => {
 	assert.match(text, /Remaining implementation task \[task-4\]/);
 });
 
+test("phase lookup accepts raw ids, bracketed ids, summary labels, and unique titles", () => {
+	assert.equal(__testHooks.findPhase(sampleState, "phase-2")?.id, "phase-2");
+	assert.equal(__testHooks.findPhase(sampleState, "[phase-2]")?.id, "phase-2");
+	assert.equal(__testHooks.findPhase(sampleState, "Implement compact output [phase-2]")?.id, "phase-2");
+	assert.equal(__testHooks.findPhase(sampleState, "Implement compact output")?.id, "phase-2");
+	assert.equal(__testHooks.findPhase(sampleState, "missing"), undefined);
+	assert.equal(__testHooks.findPhase(sampleState, ""), undefined);
+	assert.equal(__testHooks.findPhase(sampleState, undefined), undefined);
+});
+
+test("phase lookup rejects ambiguous duplicate titles", () => {
+	const duplicateTitleState: TestPlanState = {
+		...sampleState,
+		phases: [
+			{ ...sampleState.phases[0], id: "phase-1", title: "Duplicate" },
+			{ ...sampleState.phases[1], id: "phase-2", title: "Duplicate" },
+		],
+	};
+
+	assert.equal(__testHooks.findPhase(duplicateTitleState, "Duplicate"), undefined);
+	assert.equal(__testHooks.findPhase(duplicateTitleState, "phase-2")?.id, "phase-2");
+});
+
+test("phase id errors are actionable and list valid raw ids", () => {
+	const missingText = __testHooks.phaseIdError(sampleState, "add_task", undefined);
+	assert.match(missingText, /phaseId is required for add_task/);
+	assert.match(missingText, /phase-1 \(Finished discovery\)/);
+	assert.match(missingText, /phase-2 \(Implement compact output\)/);
+
+	const blankText = __testHooks.phaseIdError(sampleState, "add_task", "  ");
+	assert.match(blankText, /phaseId is required for add_task/);
+
+	const invalidText = __testHooks.phaseIdError(sampleState, "set_current_phase", "Vérification");
+	assert.match(invalidText, /phaseId "Vérification" was not found for set_current_phase/);
+	assert.match(invalidText, /raw id from brackets without brackets/);
+
+	const emptyStateText = __testHooks.phaseIdError({ ...sampleState, phases: [] }, "set_phase_checked", "missing");
+	assert.match(emptyStateText, /Valid phase ids: none\./);
+});
+
+test("injected context reminds agents to pass raw phase ids", () => {
+	const text = __testHooks.buildContextSummary(sampleState);
+
+	assert.match(text, /When a phase is shown as Title \[id\], pass phaseId as the raw id only, without brackets\./);
+});
+
 test("injected context focuses on incomplete work and omits completed task history", () => {
 	const text = __testHooks.buildContextSummary(sampleState);
 
