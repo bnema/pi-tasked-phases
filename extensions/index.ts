@@ -292,8 +292,12 @@ function nextTaskId(state: PlanState): string {
 }
 
 function extractBracketedPhaseId(value: string): string | undefined {
-	const match = /\[([^\]]+)\]\s*$/.exec(value.trim());
-	return normalizeOptionalText(match?.[1]);
+	let bracketedId: string | undefined;
+	for (const match of value.matchAll(/\[([^\]]+)\]/g)) {
+		const candidate = normalizeOptionalText(match[1]);
+		if (candidate) bracketedId = candidate;
+	}
+	return bracketedId;
 }
 
 function findUniquePhaseByTitle(state: PlanState, phaseTitle: string): Phase | undefined {

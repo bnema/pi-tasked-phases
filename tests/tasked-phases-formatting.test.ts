@@ -59,6 +59,10 @@ test("phase lookup accepts raw ids, bracketed ids, summary labels, and unique ti
 	assert.equal(__testHooks.findPhase(sampleState, "phase-2")?.id, "phase-2");
 	assert.equal(__testHooks.findPhase(sampleState, "[phase-2]")?.id, "phase-2");
 	assert.equal(__testHooks.findPhase(sampleState, "Implement compact output [phase-2]")?.id, "phase-2");
+	assert.equal(
+		__testHooks.findPhase(sampleState, "Implement compact output [phase-2] (1 remaining) - Reduce repeated context")?.id,
+		"phase-2",
+	);
 	assert.equal(__testHooks.findPhase(sampleState, "Implement compact output")?.id, "phase-2");
 	assert.equal(__testHooks.findPhase(sampleState, "missing"), undefined);
 	assert.equal(__testHooks.findPhase(sampleState, ""), undefined);
