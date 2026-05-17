@@ -86,7 +86,7 @@ const TaskedPhasesParamsSchema = Type.Object({
 			"State operation to perform. If the current plan is closed/complete, restart by calling clear first, or set_spec immediately followed by replace_plan. Do not extend closed plans.",
 	}),
 	spec: Type.Optional(Type.String({ description: "Spec text used by set_spec" })),
-	phaseId: Type.Optional(Type.String({ description: "Target phase id" })),
+	phaseId: Type.Optional(Type.String({ description: "Target phase id. Use the exact raw id shown in brackets in summaries, without the brackets." })),
 	phaseTitle: Type.Optional(Type.String({ description: "Phase title for add_phase or update_phase" })),
 	phaseGoal: Type.Optional(Type.String({ description: "Phase goal for add_phase or update_phase" })),
 	taskId: Type.Optional(Type.String({ description: "Target task id" })),
@@ -291,9 +291,49 @@ function nextTaskId(state: PlanState): string {
 	return id;
 }
 
+function extractBracketedPhaseId(value: string): string | undefined {
+	let bracketedId: string | undefined;
+	for (const match of value.matchAll(/\[([^\]]+)\]/g)) {
+		const candidate = normalizeOptionalText(match[1]);
+		if (candidate) bracketedId = candidate;
+	}
+	return bracketedId;
+}
+
+function findUniquePhaseByTitle(state: PlanState, phaseTitle: string): Phase | undefined {
+	const normalizedTitle = singleLine(phaseTitle);
+	const matches = state.phases.filter((phase) => singleLine(phase.title) === normalizedTitle);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
 function findPhase(state: PlanState, phaseId: string | undefined): Phase | undefined {
-	if (!phaseId) return undefined;
-	return state.phases.find((phase) => phase.id === phaseId);
+	const candidate = normalizeOptionalText(phaseId);
+	if (!candidate) return undefined;
+
+	const exactMatch = state.phases.find((phase) => phase.id === candidate);
+	if (exactMatch) return exactMatch;
+
+	const bracketedId = extractBracketedPhaseId(candidate);
+	if (bracketedId) {
+		const bracketedMatch = state.phases.find((phase) => phase.id === bracketedId);
+		if (bracketedMatch) return bracketedMatch;
+	}
+
+	return findUniquePhaseByTitle(state, candidate);
+}
+
+function formatValidPhaseIds(state: PlanState): string {
+	if (state.phases.length === 0) return "none";
+	return state.phases.map((phase) => `${phase.id} (${singleLine(phase.title)})`).join(", ");
+}
+
+function phaseIdError(state: PlanState, action: ToolAction, phaseId: string | undefined): string {
+	const candidate = normalizeOptionalText(phaseId);
+	const validIds = formatValidPhaseIds(state);
+	if (!candidate) {
+		return `phaseId is required for ${action}. Use a valid phase id. Valid phase ids: ${validIds}.`;
+	}
+	return `phaseId "${singleLine(candidate)}" was not found for ${action}. Use the raw id from brackets without brackets. Valid phase ids: ${validIds}.`;
 }
 
 function findTask(
@@ -461,6 +501,7 @@ function buildContextSummary(state: PlanState): string {
 				"Update tasked_phases continuously while implementing, not only at the end.",
 				"After completing each checklist task, immediately call set_task_checked.",
 				"After moving to another phase, immediately call set_current_phase.",
+				"When a phase is shown as Title [id], pass phaseId as the raw id only, without brackets.",
 				"Do not rely on prose alone for completion state.",
 			];
 
@@ -699,6 +740,8 @@ function restoreStateFromSession(ctx: ExtensionContext): PlanState {
 export const __testHooks = {
 	buildContextSummary,
 	buildToolResultText,
+	findPhase,
+	phaseIdError,
 };
 
 export default function taskedPhasesExtension(pi: ExtensionAPI) {
@@ -755,6 +798,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 			"While implementing, update tasked_phases continuously; do not wait until the end of the turn or final summary.",
 			"Use tasked_phases set_task_checked immediately after each checklist item is completed.",
 			"Use tasked_phases set_current_phase when you begin work on a different phase.",
+			"When calling phase-scoped actions, pass phaseId as the raw id shown in brackets in summaries, without brackets.",
 			"Use tasked_phases set_phase_checked when an entire phase should be marked done or reopened at once.",
 			"When all tasks in all phases are checked, the plan is closed; for unrelated new work, restart by calling clear first, or set_spec immediately followed by replace_plan. Do not extend the closed plan.",
 			"Use tasked_phases get_status before relying on remembered plan state if the plan may have changed.",
@@ -844,7 +888,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 					case "update_phase": {
 						const phase = findPhase(nextState, params.phaseId);
 						if (!phase) {
-							return buildToolResult("update_phase", state, "Phase not updated", "phaseId was not found.");
+							return buildToolResult("update_phase", state, "Phase not updated", phaseIdError(nextState, "update_phase", params.phaseId));
 						}
 						const phaseTitle = normalizeOptionalText(params.phaseTitle);
 						if (phaseTitle) {
@@ -858,24 +902,21 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 					}
 
 					case "remove_phase": {
-						if (!params.phaseId) {
-							return buildToolResult("remove_phase", state, "Phase not removed", "phaseId is required.");
+						const phase = findPhase(nextState, params.phaseId);
+						if (!phase) {
+							return buildToolResult("remove_phase", state, "Phase not removed", phaseIdError(nextState, "remove_phase", params.phaseId));
 						}
-						const beforeCount = nextState.phases.length;
-						nextState.phases = nextState.phases.filter((phase) => phase.id !== params.phaseId);
-						if (nextState.phases.length === beforeCount) {
-							return buildToolResult("remove_phase", state, "Phase not removed", "phaseId was not found.");
-						}
+						nextState.phases = nextState.phases.filter((entry) => entry.id !== phase.id);
 						nextState.currentPhaseId = getSuggestedCurrentPhaseId(nextState);
 						setState(nextState, ctx);
-						return buildToolResult("remove_phase", state, `Removed phase ${params.phaseId}`);
+						return buildToolResult("remove_phase", state, `Removed phase ${phase.id}`);
 					}
 
 					case "add_task": {
 						const phase = findPhase(nextState, params.phaseId);
 						const taskText = normalizeOptionalText(params.taskText);
 						if (!phase) {
-							return buildToolResult("add_task", state, "Task not added", "phaseId was not found.");
+							return buildToolResult("add_task", state, "Task not added", phaseIdError(nextState, "add_task", params.phaseId));
 						}
 						if (!taskText) {
 							return buildToolResult("add_task", state, "Task not added", "taskText is required for add_task.");
@@ -919,7 +960,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 								"set_current_phase",
 								state,
 								"Current phase not updated",
-								"phaseId was not found.",
+								phaseIdError(nextState, "set_current_phase", params.phaseId),
 							);
 						}
 						nextState.currentPhaseId = phase.id;
@@ -964,7 +1005,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 								"set_phase_checked",
 								state,
 								"Phase not updated",
-								"phaseId was not found.",
+								phaseIdError(nextState, "set_phase_checked", params.phaseId),
 							);
 						}
 						if (typeof params.checked !== "boolean") {
