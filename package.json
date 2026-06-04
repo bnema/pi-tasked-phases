@@ -32,12 +32,24 @@
     ]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
-    "typebox": "*"
+    "@earendil-works/pi-ai": ">=0.78.0 <1",
+    "@earendil-works/pi-coding-agent": ">=0.78.0 <1",
+    "@earendil-works/pi-tui": ">=0.78.0 <1",
+    "typebox": ">=1.1.0 <2"
   },
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-tui": "^0.78.1",
+    "@types/node": "^24.13.0",
+    "typebox": "^1.2.0",
+    "typescript": "^5.9.3"
   }
 }

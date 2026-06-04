@@ -55,6 +55,40 @@ test("explicit status tool results keep the full summary", () => {
 	assert.match(text, /Remaining implementation task \[task-4\]/);
 });
 
+test("phases command ignores non-TUI modes even when dialog UI is available", async () => {
+	let customCalled = false;
+	const ctx = {
+		mode: "rpc",
+		hasUI: true,
+		ui: {
+			custom: async () => {
+				customCalled = true;
+			},
+		},
+	};
+
+	await __testHooks.handlePhasesCommand(sampleState, ctx as never);
+
+	assert.equal(customCalled, false);
+});
+
+test("phases command opens custom UI in TUI mode", async () => {
+	let customCalled = false;
+	const ctx = {
+		mode: "tui",
+		hasUI: true,
+		ui: {
+			custom: async () => {
+				customCalled = true;
+			},
+		},
+	};
+
+	await __testHooks.handlePhasesCommand(sampleState, ctx as never);
+
+	assert.equal(customCalled, true);
+});
+
 test("phase lookup accepts raw ids, bracketed ids, summary labels, and unique titles", () => {
 	assert.equal(__testHooks.findPhase(sampleState, "phase-2")?.id, "phase-2");
 	assert.equal(__testHooks.findPhase(sampleState, "[phase-2]")?.id, "phase-2");
