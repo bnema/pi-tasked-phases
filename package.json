@@ -38,7 +38,7 @@
     "typebox": ">=1.1.0 <2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.6.0"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types tests/*.test.ts",
