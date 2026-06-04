@@ -1,6 +1,6 @@
-import { StringEnum } from "@mariozechner/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { Container, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { StringEnum } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Container, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 
 const TOOL_NAME = "tasked_phases";
@@ -96,6 +96,7 @@ const TaskedPhasesParamsSchema = Type.Object({
 });
 
 type PhaseInput = Static<typeof PhaseInputSchema>;
+type TaskedPhasesParams = Static<typeof TaskedPhasesParamsSchema>;
 
 function createEmptyState(): PlanState {
 	return {
@@ -737,10 +738,21 @@ function restoreStateFromSession(ctx: ExtensionContext): PlanState {
 	return restored;
 }
 
+type ModeAwareCommandContext = ExtensionCommandContext & { mode: "tui" | "rpc" | "json" | "print" };
+
+async function handlePhasesCommand(state: PlanState, ctx: ModeAwareCommandContext): Promise<void> {
+	if (ctx.mode !== "tui") {
+		return;
+	}
+
+	await ctx.ui.custom<void>((_tui, theme, _kb, done) => new PhaseStateView(state, theme, () => done()));
+}
+
 export const __testHooks = {
 	buildContextSummary,
 	buildToolResultText,
 	findPhase,
+	handlePhasesCommand,
 	phaseIdError,
 };
 
@@ -786,7 +798,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 		};
 	});
 
-	pi.registerTool({
+	pi.registerTool<typeof TaskedPhasesParamsSchema, TaskedPhasesDetails>({
 		name: TOOL_NAME,
 		label: "Tasked Phases",
 		description:
@@ -804,7 +816,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 			"Use tasked_phases get_status before relying on remembered plan state if the plan may have changed.",
 		],
 		parameters: TaskedPhasesParamsSchema,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: TaskedPhasesParams, signal, _onUpdate, ctx) {
 			return withStateLock(async () => {
 				if (signal?.aborted) {
 					return buildToolResult(params.action, state, "Cancelled", "Operation was aborted.");
@@ -1079,11 +1091,7 @@ export default function taskedPhasesExtension(pi: ExtensionAPI) {
 	pi.registerCommand("phases", {
 		description: "Show the current spec, phases, and checklist state",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				return;
-			}
-
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new PhaseStateView(state, theme, () => done()));
+			await handlePhasesCommand(state, ctx as ModeAwareCommandContext);
 		},
 	});
 }
