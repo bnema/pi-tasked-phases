@@ -1,12 +1,15 @@
 {
   "name": "pi-tasked-phases",
   "version": "0.2.2",
-  "description": "Pi package for spec-driven phased task planning and checklist tracking",
+  "description": "Track a spec, phased plan, and checklist inside a Pi session.",
   "license": "MIT",
   "author": "bnema",
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi",
+    "pi-extension",
+    "planning",
+    "checklist"
   ],
   "repository": {
     "type": "git",
